@@ -12,7 +12,13 @@ foreach(TEST_SCRIPT ${TEST_SCRIPTS})
     get_filename_component(TEST_TARGET_NAME ${RELATIVE_TEST_PATH} NAME_WE)
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/${TEST_TARGET_DIR})
 
-    if (TEST_SCRIPT MATCHES ".*cu")
+    if (TEST_SCRIPT MATCHES "test_pid_namespace.c")
+        add_executable(${TEST_TARGET_NAME} ${TEST_SCRIPT}
+            ${CMAKE_CURRENT_SOURCE_DIR}/../src/pid_namespace.c)
+    elseif (TEST_SCRIPT MATCHES "test_context_accounting.c")
+        add_executable(${TEST_TARGET_NAME} ${TEST_SCRIPT}
+            ${CMAKE_CURRENT_SOURCE_DIR}/../src/cuda/context_accounting.c)
+    elseif (TEST_SCRIPT MATCHES ".*cu")
         cuda_add_executable(${TEST_TARGET_NAME}  ${TEST_SCRIPT})
     else()
         add_executable(${TEST_TARGET_NAME}  ${TEST_SCRIPT})

@@ -37,6 +37,18 @@ extern int env_utilization_switch;
 /* context size for a certain task, we need to add it into device-memory usage*/
 extern size_t context_size;
 
+static int init_phase_trace_enabled(void) {
+    const char *value = getenv("LIBVGPU_INIT_PHASE_TRACE");
+    return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+#define INIT_PHASE_TRACE(phase)                    \
+    do {                                           \
+        if (init_phase_trace_enabled()) {          \
+            LOG_MSG("INIT_PHASE %s", (phase));     \
+        }                                          \
+    } while (0)
+
 /* This is the symbol search function */
 fp_dlsym real_dlsym = NULL;
 
@@ -871,6 +883,7 @@ void* __dlsym_hook_section_nvml(void* handle, const char* symbol) {
 void preInit(){
     log_utils_init();
     LOG_MSG("Initializing.....");
+    INIT_PHASE_TRACE("preinit.begin");
     if (real_dlsym == NULL) {
         real_dlsym = dlvsym(RTLD_NEXT,"dlsym","GLIBC_2.2.5");
         if (real_dlsym == NULL) {
@@ -885,30 +898,39 @@ void preInit(){
     }
     real_realpath = NULL;
     load_cuda_libraries();
+    INIT_PHASE_TRACE("preinit.cuda_libraries_loaded");
     //nvmlInit();
     ENSURE_INITIALIZED();
-    pthread_atfork(NULL, NULL, childReinitPostInit);
+    INIT_PHASE_TRACE("preinit.shared_region_ready");
+    if (pthread_atfork(context_accounting_fork_prepare,
+                       context_accounting_fork_parent,
+                       childReinitPostInit) != 0) {
+        LOG_WARN("Failed to register context accounting fork handlers");
+    }
+    INIT_PHASE_TRACE("preinit.end");
 }
 
 void postInit(){
+    INIT_PHASE_TRACE("postinit.begin");
     allocator_init();
+    INIT_PHASE_TRACE("postinit.allocator_ready");
     map_cuda_visible_devices();
+    INIT_PHASE_TRACE("postinit.device_map_ready");
 
-    // Use shared memory semaphore to serialize host PID detection
-    // Returns 1 if lock acquired, 0 if timeout (skip detection)
-    int lock_acquired = lock_postinit();
-    nvmlReturn_t res = NVML_SUCCESS;
-
-    if (lock_acquired) {
-        // Lock acquired - safe to call set_task_pid()
-        res = set_task_pid();
-        unlock_postinit();
-    } else {
-        // Timeout - another process likely crashed holding the lock
-        // Skip host PID detection for this process
-        LOG_WARN("Skipped host PID detection due to lock timeout");
-        res = NVML_ERROR_TIMEOUT;
+    nvmlReturn_t res = set_task_pid_from_host_proc();
+    if (res != NVML_SUCCESS) {
+        // Serialize the NVML before/after fallback so concurrent contexts
+        // cannot be mistaken for this process.
+        int lock_acquired = lock_postinit();
+        if (lock_acquired) {
+            res = set_task_pid();
+            unlock_postinit();
+        } else {
+            LOG_WARN("Skipped host PID detection due to lock timeout");
+            res = NVML_ERROR_TIMEOUT;
+        }
     }
+    INIT_PHASE_TRACE("postinit.host_pid_ready");
 
     LOG_MSG("Initialized");
     if (res != NVML_SUCCESS) {
@@ -920,10 +942,14 @@ void postInit(){
 
     //add_gpu_device_memory_usage(getpid(),0,context_size,0);
     env_utilization_switch = set_env_utilization_switch();
+    INIT_PHASE_TRACE("postinit.utilization_env_ready");
     init_utilization_watcher();
+    INIT_PHASE_TRACE("postinit.watcher_ready");
+    INIT_PHASE_TRACE("postinit.end");
 }
 
 void childReinitPostInit() {
+    context_accounting_fork_child();
     LOG_DEBUG("Reset postInit state after fork");
     post_cuinit_flag = PTHREAD_ONCE_INIT;
     pidfound = 0;
@@ -937,7 +963,9 @@ CUresult cuInit(unsigned int Flags){
     LOG_INFO("Into cuInit");
     pthread_once(&pre_cuinit_flag,(void(*)(void))preInit);
     ENSURE_INITIALIZED();
+    INIT_PHASE_TRACE("cuinit.driver_begin");
     CUresult res = CUDA_OVERRIDE_CALL(cuda_library_entry,cuInit,Flags);
+    INIT_PHASE_TRACE("cuinit.driver_end");
     if (res != CUDA_SUCCESS){
         LOG_ERROR("cuInit failed:%d",res);
         return res;

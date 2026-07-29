@@ -46,6 +46,36 @@ Compares `struct shared_region_t`'s sizeof and offsetof for key fields against t
 ./abi_check
 ```
 
+### nstgid_probe
+
+Prints the current process's PID namespace IDs, namespace inodes, and procfs
+mount as one JSON record. It has no CUDA dependency and is intended to verify
+whether `NStgid` is host-relative in a specific runtime layout instead of
+assuming that its leftmost value is always the host PID.
+
+```bash
+make nstgid_probe
+./nstgid_probe
+unshare --user --map-root-user --pid --fork ./nstgid_probe
+unshare --user --map-root-user --pid --fork --mount-proc ./nstgid_probe
+./nstgid_probe --proc-root /host/proc
+```
+
+### Guarded host-PID fast path
+
+The prototype fast path is enabled only when `LIBVGPU_HOST_PROCFS` points to a
+procfs mounted from the initial PID namespace:
+
+```bash
+export LIBVGPU_HOST_PROCFS=/host/proc
+```
+
+Do not point this variable at a container-private `/proc`: its `NStgid` values
+are container-relative. If the variable is absent or cannot be read, HAMi-core
+uses the existing serialized NVML detector. A Kubernetes deployment would need
+an explicitly reviewed, read-only hostPath mount of host `/proc`; the library
+does not silently add or assume that privilege.
+
 ## Building
 
 ```bash

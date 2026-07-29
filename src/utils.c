@@ -2,6 +2,8 @@
 #include <string.h>
 #include <dirent.h>
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
 #include <time.h>
 #include <sys/file.h>
 #include "include/utils.h"
@@ -10,6 +12,7 @@
 #include <nvml.h>
 #include "include/nvml_override.h"
 #include "include/libcuda_hook.h"
+#include "include/pid_namespace.h"
 #include "multiprocess/multiprocess_memory_limit.h"
 
 const char* unified_lock="/tmp/vgpulock/lock";
@@ -93,6 +96,107 @@ int getextrapid(unsigned int prev, unsigned int current, nvmlProcessInfo_t1 *pre
             return pids_on_device[i].pid;
     }
     return 0;
+}
+
+nvmlReturn_t set_task_pid_from_host_proc() {
+    const char *proc_root = getenv("LIBVGPU_HOST_PROCFS");
+    char status_path[PATH_MAX];
+    pid_t namespace_pids[PID_NAMESPACE_MAX_LEVELS];
+    size_t namespace_count = 0;
+
+    /*
+     * There is deliberately no implicit /proc default here. A procfs mounted
+     * in a container's PID namespace reports container-relative NStgid values.
+     * The administrator must point this at a procfs mounted from the initial
+     * PID namespace, for example /host/proc.
+     */
+    if (proc_root == NULL || proc_root[0] == '\0') {
+        return NVML_ERROR_NOT_SUPPORTED;
+    }
+    if (snprintf(status_path, sizeof(status_path), "%s/self/status",
+                 proc_root) >= (int)sizeof(status_path)) {
+        LOG_WARN("LIBVGPU_HOST_PROCFS path is too long");
+        return NVML_ERROR_INVALID_ARGUMENT;
+    }
+    if (read_nstgid_file(status_path, namespace_pids,
+                         PID_NAMESPACE_MAX_LEVELS,
+                         &namespace_count) != 0) {
+        LOG_WARN("Cannot read NStgid from %s: %s", status_path,
+                 strerror(errno));
+        return NVML_ERROR_NOT_FOUND;
+    }
+    if (namespace_count == 0 || namespace_pids[0] <= 0) {
+        LOG_WARN("No valid NStgid in %s", status_path);
+        return NVML_ERROR_NOT_FOUND;
+    }
+    if (set_host_pid(namespace_pids[0]) != 0) {
+        return NVML_ERROR_NOT_FOUND;
+    }
+
+    LOG_INFO("Host PID %d read from trusted procfs %s",
+             namespace_pids[0], proc_root);
+    return NVML_SUCCESS;
+}
+
+nvmlReturn_t get_used_gpu_memory_by_pid(unsigned int process_pid, int cudadev,
+                                        unsigned long long *used) {
+    nvmlProcessInfo_v1_t *processes = NULL;
+    nvmlDevice_t device;
+    nvmlReturn_t result;
+    unsigned int count = SHARED_REGION_MAX_PROCESS_NUM;
+    unsigned int i;
+    int nvmldev;
+
+    if (used == NULL || process_pid == 0) {
+        return NVML_ERROR_INVALID_ARGUMENT;
+    }
+    *used = 0;
+    nvmldev = cuda_to_nvml_map(cudadev);
+    if (nvmldev < 0) {
+        return NVML_ERROR_INVALID_ARGUMENT;
+    }
+
+    result = nvmlInit();
+    if (result != NVML_SUCCESS) {
+        return result;
+    }
+    result = nvmlDeviceGetHandleByIndex(nvmldev, &device);
+    if (result != NVML_SUCCESS) {
+        return result;
+    }
+
+    processes = calloc(count, sizeof(*processes));
+    if (processes == NULL) {
+        return NVML_ERROR_MEMORY;
+    }
+    result = nvmlDeviceGetComputeRunningProcesses(device, &count, processes);
+    if (result == NVML_ERROR_INSUFFICIENT_SIZE && count > 0) {
+        nvmlProcessInfo_v1_t *larger =
+            realloc(processes, count * sizeof(*processes));
+        if (larger == NULL) {
+            free(processes);
+            return NVML_ERROR_MEMORY;
+        }
+        processes = larger;
+        result =
+            nvmlDeviceGetComputeRunningProcesses(device, &count, processes);
+    }
+    if (result != NVML_SUCCESS) {
+        free(processes);
+        return result;
+    }
+
+    result = NVML_ERROR_NOT_FOUND;
+    for (i = 0; i < count; i++) {
+        if (processes[i].pid == process_pid &&
+            processes[i].usedGpuMemory != NVML_VALUE_NOT_AVAILABLE) {
+            *used = processes[i].usedGpuMemory;
+            result = NVML_SUCCESS;
+            break;
+        }
+    }
+    free(processes);
+    return result;
 }
 
 nvmlReturn_t set_task_pid() {
