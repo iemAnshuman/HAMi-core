@@ -12,6 +12,7 @@
 #include <nvml.h>
 #include "include/nvml_override.h"
 #include "include/libcuda_hook.h"
+#include "include/hostpid_broker.h"
 #include "include/pid_namespace.h"
 #include "multiprocess/multiprocess_memory_limit.h"
 
@@ -96,6 +97,27 @@ int getextrapid(unsigned int prev, unsigned int current, nvmlProcessInfo_t1 *pre
             return pids_on_device[i].pid;
     }
     return 0;
+}
+
+nvmlReturn_t set_task_pid_from_broker() {
+    const char *enabled = getenv("LIBVGPU_HOSTPID_BROKER");
+    pid_t hostpid = 0;
+
+    if (enabled == NULL || enabled[0] == '\0' ||
+        strcmp(enabled, "0") == 0) {
+        return NVML_ERROR_NOT_SUPPORTED;
+    }
+    if (hostpid_broker_query_trusted(HOSTPID_BROKER_SOCKET_PATH,
+                                     &hostpid) != 0) {
+        LOG_DEBUG("Host PID broker unavailable: %s", strerror(errno));
+        return NVML_ERROR_NOT_FOUND;
+    }
+    if (set_host_pid(hostpid) != 0) {
+        return NVML_ERROR_NOT_FOUND;
+    }
+
+    LOG_INFO("Host PID %d read from trusted broker", hostpid);
+    return NVML_SUCCESS;
 }
 
 nvmlReturn_t set_task_pid_from_host_proc() {

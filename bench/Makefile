@@ -5,7 +5,7 @@ LIBS = -L$(CUDA_HOME)/lib64 -lcuda -lpthread -lm
 
 CORE_TARGETS = bench_init nested_retain warm_holder abi_check
 OPTIONAL_TARGETS = phase_probe
-HOST_TARGETS = nstgid_probe
+HOST_TARGETS = nstgid_probe hostpid_broker_probe
 
 # Probe with the exact header path and link flags phase_probe itself uses,
 # not just ldconfig -p: the runtime .so.1 can be present via the driver
@@ -59,6 +59,9 @@ abi_check: abi_check.c
 	gcc $(CFLAGS) $(INCLUDES) $< -o $@ -lpthread
 
 nstgid_probe: nstgid_probe.c ../src/pid_namespace.c
+	gcc $(CFLAGS) -I../src $^ -o $@
+
+hostpid_broker_probe: hostpid_broker_probe.c ../src/hostpid_broker.c
 	gcc $(CFLAGS) -I../src $^ -o $@
 
 clean:

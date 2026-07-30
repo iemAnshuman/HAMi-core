@@ -61,6 +61,35 @@ unshare --user --map-root-user --pid --fork --mount-proc ./nstgid_probe
 ./nstgid_probe --proc-root /host/proc
 ```
 
+### hostpid_broker_probe
+
+Queries the fixed, root-owned host-PID broker socket and prints the
+container PID, returned host PID, and round-trip latency as one JSON record.
+It has no CUDA dependency.
+
+```bash
+make hostpid_broker_probe
+./hostpid_broker_probe
+./hostpid_broker_probe 5  # keep the process alive for node-side PID checks
+```
+
+The broker path is `/tmp/vgpulock/hostpid/broker.sock`. The probe rejects a
+socket that is not owned by root or whose parent directory is writable by
+group or other users.
+
+### Guarded host-PID broker
+
+The broker prototype is opt-in. `vGPUmonitor` must run in the host PID
+namespace and listen on the fixed socket path, and HAMi-core must receive:
+
+```bash
+export LIBVGPU_HOSTPID_BROKER=1
+```
+
+If the broker is disabled, unavailable, untrusted, or returns an invalid
+response, HAMi-core continues to the guarded `NStgid` path and then the
+existing serialized NVML detector.
+
 ### Guarded host-PID fast path
 
 The prototype fast path is enabled only when `LIBVGPU_HOST_PROCFS` points to a

@@ -917,7 +917,10 @@ void postInit(){
     map_cuda_visible_devices();
     INIT_PHASE_TRACE("postinit.device_map_ready");
 
-    nvmlReturn_t res = set_task_pid_from_host_proc();
+    nvmlReturn_t res = set_task_pid_from_broker();
+    if (res != NVML_SUCCESS) {
+        res = set_task_pid_from_host_proc();
+    }
     if (res != NVML_SUCCESS) {
         // Serialize the NVML before/after fallback so concurrent contexts
         // cannot be mistaken for this process.

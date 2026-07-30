@@ -66,6 +66,7 @@ typedef void* (*fp_dlsym)(void*, const char*);
   __builtin_extract_return_addr (__builtin_return_address (nr))
 
 nvmlReturn_t set_task_pid();
+nvmlReturn_t set_task_pid_from_broker();
 nvmlReturn_t set_task_pid_from_host_proc();
 nvmlReturn_t get_used_gpu_memory_by_pid(unsigned int process_pid, int cudadev,
                                         unsigned long long *used);
