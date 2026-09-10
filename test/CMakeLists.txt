@@ -8,6 +8,7 @@ set(TEST_TARGET_NAMES_LIST)
 
 
 file(GLOB_RECURSE TEST_SCRIPTS "${TEST_CPP_SOURCE_DIR}/*.c" "${TEST_CPP_SOURCE_DIR}/*.cu")
+list(REMOVE_ITEM TEST_SCRIPTS "${TEST_CPP_SOURCE_DIR}/test_hostpid_broker.c")
 foreach(TEST_SCRIPT ${TEST_SCRIPTS}) 
     file(RELATIVE_PATH RELATIVE_TEST_PATH ${TEST_CPP_SOURCE_DIR} ${TEST_SCRIPT})
     get_filename_component(TEST_TARGET_DIR ${RELATIVE_TEST_PATH} DIRECTORY)
@@ -78,6 +79,8 @@ foreach(TEST_SCRIPT ${TEST_SCRIPTS})
 	endif()
 endforeach()
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_subdirectory(hostpid_broker)
 
 add_test(NAME postinit_owner_death
     COMMAND test_postinit_owner_death)
