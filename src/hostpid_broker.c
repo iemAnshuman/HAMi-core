@@ -117,23 +117,52 @@ static int connect_before_deadline(int fd,
                                    socklen_t address_length,
                                    const struct timespec *deadline) {
     int result;
+    int backoff_ms = 1;
     int socket_error = 0;
     socklen_t error_length = sizeof(socket_error);
 
-    do {
+    for (;;) {
         if (remaining_ms(deadline) < 0) {
             return -1;
         }
         result = connect(fd, (const struct sockaddr *)address,
                          address_length);
-    } while (result < 0 && errno == EINTR);
+        if (result >= 0 || (errno != EINTR && errno != EAGAIN)) {
+            break;
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        /* A full Unix accept queue leaves no pending connection. POLLOUT
+         * and SO_ERROR cannot establish success after EAGAIN; retry connect.
+         */
+#ifdef HOSTPID_BROKER_TESTING
+        hostpid_broker_test_connect_retry(fd);
+#endif
+        int wait_ms = remaining_ms(deadline);
+        if (wait_ms < 0) {
+            return -1;
+        }
+        if (wait_ms > backoff_ms) {
+            wait_ms = backoff_ms;
+        }
+        if (poll(NULL, 0, wait_ms) < 0 && errno != EINTR) {
+            return -1;
+        }
+        if (backoff_ms < 10) {
+            backoff_ms *= 2;
+            if (backoff_ms > 10) {
+                backoff_ms = 10;
+            }
+        }
+    }
     if (result == 0) {
         return remaining_ms(deadline) < 0 ? -1 : 0;
     }
     if (errno == EISCONN) {
         return remaining_ms(deadline) < 0 ? -1 : 0;
     }
-    if (errno != EINPROGRESS && errno != EALREADY && errno != EAGAIN) {
+    if (errno != EINPROGRESS && errno != EALREADY) {
         return -1;
     }
     if (wait_for_fd(fd, POLLOUT, deadline) != 0) {

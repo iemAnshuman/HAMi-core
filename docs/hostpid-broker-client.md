@@ -41,8 +41,11 @@ accepted. Invalid magic, version or status returns `EPROTO`; an out of range PID
 returns `ERANGE`. A partial response followed by EOF returns `ECONNRESET`.
 
 One 500 millisecond monotonic deadline covers connection, request writing and
-response reading. Receiving a partial response does not renew it. Filesystem
-trust checks happen before this socket deadline and have no separate timeout.
+response reading. Receiving a partial response does not renew it. On Linux, a
+full accept queue returns `EAGAIN`; the client retries `connect()` with waits
+starting at 1 millisecond and capped at 10 milliseconds under the same deadline.
+Filesystem trust checks happen before this socket deadline and have no separate
+timeout.
 Socket errors are returned to the caller. Descriptors are nonblocking and have
 `FD_CLOEXEC`; ordinary returns and deferred thread cancellation close them.
 Asynchronous cancellation is unsupported.
@@ -61,9 +64,10 @@ ctest --test-dir build-broker --output-on-failure -V
 Tests use temporary Unix sockets and a 100 millisecond socket deadline. They
 cover valid and fragmented replies, malformed protocol fields, invalid PIDs,
 early EOF, silent and trickling servers, invalid inputs, path trust failures,
-peer credentials and cancellation cleanup. Peer acceptance and UID mismatch
-tests run on Linux. Other systems report that coverage as skipped and check
-that unsupported peer validation fails closed.
+peer credentials and cancellation cleanup. Linux tests fill the accept queue
+and check recovery after `EAGAIN`, timeout and cancellation during retries.
+Peer acceptance and UID mismatch tests run on Linux. Other systems report that
+coverage as skipped and check that unsupported peer validation fails closed.
 
 The main build also includes this test. CI runs it independently on Linux and
 inside the existing NVIDIA development container. These tests do not exercise

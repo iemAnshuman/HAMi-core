@@ -30,6 +30,8 @@ int hostpid_broker_validate_trust(const char *socket_path,
                                   int require_readonly);
 
 #ifdef HOSTPID_BROKER_TESTING
+/* Tests observe real EAGAIN before allowing the server to drain its queue. */
+void hostpid_broker_test_connect_retry(int fd);
 /* Test the production peer check on a temporary socket without root mounts. */
 int hostpid_broker_test_query_peer(const char *socket_path, pid_t *host_pid,
                                   uid_t trusted_uid);

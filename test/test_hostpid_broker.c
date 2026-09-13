@@ -11,6 +11,7 @@
 #include <stddef.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,6 +34,20 @@ enum {
 };
 
 typedef void (*server_action_t)(int connection);
+
+#ifdef HOSTPID_BROKER_TESTING
+static atomic_int connect_retry_count;
+static atomic_int connect_retry_fd;
+static int connect_retry_notify = -1;
+
+void hostpid_broker_test_connect_retry(int fd) {
+    atomic_store(&connect_retry_fd, fd);
+    if (atomic_fetch_add(&connect_retry_count, 1) == 0 &&
+        connect_retry_notify >= 0) {
+        assert(write(connect_retry_notify, "r", 1) == 1);
+    }
+}
+#endif
 
 static void read_request(int connection) {
     unsigned char request[REQUEST_SIZE];
@@ -273,6 +288,140 @@ static void *query_in_thread(void *argument) {
     return NULL;
 }
 
+#if defined(__linux__) && defined(HOSTPID_BROKER_TESTING)
+static int fill_accept_queue(int listener, const char *socket_path) {
+    struct sockaddr_un address = {.sun_family = AF_UNIX};
+    size_t length = strlen(socket_path);
+    assert(length < sizeof(address.sun_path));
+    memcpy(address.sun_path, socket_path, length + 1);
+    socklen_t address_length =
+        (socklen_t)(offsetof(struct sockaddr_un, sun_path) + length + 1);
+
+    /* Linux allows one queued connection with listen(..., 0). */
+    assert(listen(listener, 0) == 0);
+    int queued = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    assert(queued >= 0);
+    assert(connect(queued, (struct sockaddr *)&address, address_length) == 0);
+    int probe = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    assert(probe >= 0);
+    assert(connect(probe, (struct sockaddr *)&address, address_length) == -1);
+    assert(errno == EAGAIN);
+    close(probe);
+    atomic_store(&connect_retry_count, 0);
+    atomic_store(&connect_retry_fd, -1);
+    return queued;
+}
+
+static void assert_retry_socket_closed(void) {
+    assert(atomic_load(&connect_retry_count) > 0);
+    int fd = atomic_load(&connect_retry_fd);
+    assert(fd >= 0);
+    errno = 0;
+    assert(fcntl(fd, F_GETFD) == -1);
+    assert(errno == EBADF);
+}
+
+static void test_full_accept_queue_timeout(void) {
+    char directory[PATH_MAX];
+    char socket_path[PATH_MAX];
+    struct timespec begin, end;
+    pid_t host_pid = 99;
+    int listener = make_listener(socket_path, sizeof(socket_path),
+                                 directory, sizeof(directory));
+    int queued = fill_accept_queue(listener, socket_path);
+
+    assert(clock_gettime(CLOCK_MONOTONIC, &begin) == 0);
+    assert(hostpid_broker_query(socket_path, &host_pid) == -1);
+    assert(errno == ETIMEDOUT);
+    assert(host_pid == 0);
+    assert(clock_gettime(CLOCK_MONOTONIC, &end) == 0);
+    int64_t elapsed_ms = (int64_t)(end.tv_sec - begin.tv_sec) * 1000 +
+                        (end.tv_nsec - begin.tv_nsec) / 1000000;
+    assert(elapsed_ms >= 80 && elapsed_ms < 300);
+    assert(atomic_load(&connect_retry_count) > 1);
+    assert_retry_socket_closed();
+    close(queued);
+    close(listener);
+    assert(unlink(socket_path) == 0);
+    assert(rmdir(directory) == 0);
+    puts("full accept queue times out under the original deadline");
+}
+
+static void test_full_accept_queue_recovers(void) {
+    char directory[PATH_MAX];
+    char socket_path[PATH_MAX];
+    int notify[2];
+    int status;
+    pid_t host_pid = 99;
+    int listener = make_listener(socket_path, sizeof(socket_path),
+                                 directory, sizeof(directory));
+    int queued = fill_accept_queue(listener, socket_path);
+    assert(pipe(notify) == 0);
+    connect_retry_notify = notify[1];
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        char byte;
+        alarm(5);
+        close(notify[1]);
+        close(queued);
+        /* Do not drain the queue until the client really sees EAGAIN. */
+        assert(read(notify[0], &byte, 1) == 1);
+        close(notify[0]);
+        int connection = accept(listener, NULL, NULL);
+        assert(connection >= 0);
+        close(connection);
+        connection = accept(listener, NULL, NULL);
+        assert(connection >= 0);
+        serve_success(connection);
+        close(connection);
+        close(listener);
+        _exit(0);
+    }
+    close(notify[0]);
+    close(listener);
+    assert(hostpid_broker_query(socket_path, &host_pid) == 0);
+    assert(host_pid == 43210);
+    assert_retry_socket_closed();
+    connect_retry_notify = -1;
+    close(notify[1]);
+    close(queued);
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    assert(unlink(socket_path) == 0);
+    assert(rmdir(directory) == 0);
+    puts("full accept queue recovers after a confirmed EAGAIN");
+}
+
+static void test_cancelled_connect_retry(void) {
+    char directory[PATH_MAX];
+    char socket_path[PATH_MAX];
+    int notify[2];
+    char byte;
+    pthread_t thread;
+    void *result;
+    int listener = make_listener(socket_path, sizeof(socket_path),
+                                 directory, sizeof(directory));
+    int queued = fill_accept_queue(listener, socket_path);
+    assert(pipe(notify) == 0);
+    connect_retry_notify = notify[1];
+    assert(pthread_create(&thread, NULL, query_in_thread, socket_path) == 0);
+    assert(read(notify[0], &byte, 1) == 1);
+    assert(pthread_cancel(thread) == 0);
+    assert(pthread_join(thread, &result) == 0);
+    assert(result == PTHREAD_CANCELED);
+    assert_retry_socket_closed();
+    connect_retry_notify = -1;
+    close(notify[0]);
+    close(notify[1]);
+    close(queued);
+    close(listener);
+    assert(unlink(socket_path) == 0);
+    assert(rmdir(directory) == 0);
+    puts("cancelled connect retry closes its socket");
+}
+#endif
+
 static void test_cancelled_query_closes_socket(void) {
     char directory[PATH_MAX];
     char socket_path[PATH_MAX];
@@ -478,6 +627,13 @@ static void test_trust_validation(void) {
 int main(void) {
     alarm(15);
     signal(SIGPIPE, SIG_IGN);
+#if defined(__linux__) && defined(HOSTPID_BROKER_TESTING)
+    test_full_accept_queue_timeout();
+    test_full_accept_queue_recovers();
+    test_cancelled_connect_retry();
+#else
+    puts("SKIP: Linux Unix socket accept queue saturation");
+#endif
     test_cancelled_query_closes_socket();
     test_protocol();
     test_absolute_timeout();
