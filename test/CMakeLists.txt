@@ -159,6 +159,7 @@ set_tests_properties(pid_discovery PROPERTIES TIMEOUT 10)
 add_test(NAME hostpid_fallback_lock
     COMMAND test_hostpid_fallback_lock)
 set_tests_properties(hostpid_fallback_lock PROPERTIES TIMEOUT 30)
+
 # The watcher must ask NVML for the NVML index it is walking, not the CUDA
 # index it maps to; the two only coincide when CUDA_VISIBLE_DEVICES is the
 # identity map (issue #318).
