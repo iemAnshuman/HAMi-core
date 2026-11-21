@@ -92,6 +92,10 @@ assert primary["metrics_us"]["retain_us"]["p50"] >= 3000
 assert primary["metrics_us"]["release_us"]["p50"] >= 1500
 assert primary["metrics_us"]["api_us"]["p50"] >= 7500
 
+assert all(int(row["cpu_us"]) >= 0 and int(row["maxrss_kb"]) > 0 for row in cuinit_rows + primary_rows)
+assert primary["resources"]["maxrss_kb"]["p50"] > 0
+assert "cpu_us" in primary["resources"]
+
 manual = sorted(int(row["api_us"]) for row in cuinit_rows)
 assert cuinit["metrics_us"]["api_us"]["p50"] == manual[math.ceil(len(manual) * 0.50) - 1]
 

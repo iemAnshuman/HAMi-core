@@ -12,6 +12,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -37,6 +39,7 @@ enum worker_stage { STAGE_OK = 0, STAGE_CONFIG, STAGE_DLOPEN, STAGE_SYMBOL, STAG
 struct worker_result {
     int32_t worker, pid, cache_slot, gpu_slot, stage, api_result;
     int64_t load_us, symbol_us, cuinit_us, device_us, retain_us, hold_us, release_us, api_us;
+    int64_t cpu_us, maxrss_kb;
 };
 
 _Static_assert(sizeof(struct worker_result) <= PIPE_BUF, "worker result must fit in one pipe write");
@@ -421,6 +424,24 @@ finish:
     result->api_us = elapsed_us(&api_begin, &api_end);
 }
 
+/* CPU time of all threads and peak RSS of this worker, taken just before it reports. */
+static void record_usage(struct worker_result *result) {
+    struct rusage usage;
+
+    if (getrusage(RUSAGE_SELF, &usage) != 0) {
+        result->cpu_us = -1;
+        result->maxrss_kb = -1;
+        return;
+    }
+    result->cpu_us = (int64_t)usage.ru_utime.tv_sec * 1000000 + usage.ru_utime.tv_usec +
+                     (int64_t)usage.ru_stime.tv_sec * 1000000 + usage.ru_stime.tv_usec;
+#ifdef __APPLE__
+    result->maxrss_kb = (int64_t)usage.ru_maxrss / 1024;
+#else
+    result->maxrss_kb = (int64_t)usage.ru_maxrss;
+#endif
+}
+
 static void exit_worker(struct worker_runtime *runtime, int code) {
     if (runtime->library != NULL) {
         (void)dlclose(runtime->library);
@@ -444,6 +465,7 @@ static void child_main(int worker, const struct options *options, int ready_fd, 
     if (result.stage == STAGE_OK) {
         execute_worker(options, &result, &runtime);
     }
+    record_usage(&result);
     if (write_exact(result_fd, &result, sizeof(result)) != 0) {
         exit_worker(&runtime, 126);
     }
@@ -615,7 +637,7 @@ static int write_output(const struct options *options, struct worker_result *res
         }
     }
     qsort(results, (size_t)options->workers, sizeof(*results), compare_worker);
-    fprintf(output, "# schema=cuinit-bench-v1\n# workers=%d\n# mode=%s\n# symbol_scope=process\n# device=%d\n",
+    fprintf(output, "# schema=cuinit-bench-v2\n# workers=%d\n# mode=%s\n# symbol_scope=process\n# device=%d\n",
             options->workers, mode_name(options->mode), options->device);
     if (options->worker_gpus > 0) {
         fprintf(output, "# distribution=balanced-cache-gpu\n");
@@ -631,7 +653,7 @@ static int write_output(const struct options *options, struct worker_result *res
             setup_wall_us, api_wall_us);
     fprintf(output,
             "worker,pid,cache_slot,gpu_slot,status,stage,api_result,load_us,symbol_us,cuinit_us,device_us,"
-            "retain_us,hold_us,release_us,api_us\n");
+            "retain_us,hold_us,release_us,api_us,cpu_us,maxrss_kb\n");
     for (index = 0; index < options->workers; index++) {
         const struct worker_result *result = &results[index];
         const char *status = result->stage == STAGE_OK ? "ok" : "failed";
@@ -641,11 +663,11 @@ static int write_output(const struct options *options, struct worker_result *res
         }
         fprintf(output,
                 "%d,%d,%d,%d,%s,%s,%d,%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64
-                ",%" PRId64 ",%" PRId64 "\n",
+                ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 "\n",
                 result->worker, result->pid, result->cache_slot, result->gpu_slot, status,
                 stage_name(result->stage), result->api_result, result->load_us, result->symbol_us,
                 result->cuinit_us, result->device_us, result->retain_us, result->hold_us, result->release_us,
-                result->api_us);
+                result->api_us, result->cpu_us, result->maxrss_kb);
     }
     if (output != stdout && fclose(output) != 0) {
         return -1;

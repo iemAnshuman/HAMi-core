@@ -8,6 +8,9 @@ from collections import defaultdict
 from pathlib import Path
 
 METRICS = ("load_us", "symbol_us", "cuinit_us", "device_us", "retain_us", "hold_us", "release_us", "api_us")
+# Per-worker CPU time and peak RSS, schema v2 only. -1 means getrusage failed.
+RESOURCES = ("cpu_us", "maxrss_kb")
+SCHEMAS = ("cuinit-bench-v1", "cuinit-bench-v2")
 
 
 def percentile(values, fraction):
@@ -56,7 +59,7 @@ def summarize_group(condition, files):
     cells = defaultdict(lambda: {"rows": [], "runs": 0, "failures": defaultdict(int)})
     for path in files:
         metadata, rows = read_csv(path)
-        if metadata.get("schema") != "cuinit-bench-v1":
+        if metadata.get("schema") not in SCHEMAS:
             raise ValueError(f"{path}: unsupported schema {metadata.get('schema')}")
         key = (metadata.get("mode", ""), int(metadata["workers"]))
         cells[key]["runs"] += 1
@@ -79,6 +82,16 @@ def summarize_group(condition, files):
                 "p99": percentile(values, 0.99),
                 "max": max(values, default=0),
             }
+        resources = {}
+        for resource in RESOURCES:
+            values = [int(row[resource]) for row in ok_rows if row.get(resource) not in (None, "")]
+            values = [value for value in values if value >= 0]
+            if values:
+                resources[resource] = {
+                    "p50": percentile(values, 0.50),
+                    "p95": percentile(values, 0.95),
+                    "max": max(values),
+                }
         summaries.append(
             {
                 "condition": condition,
@@ -89,6 +102,7 @@ def summarize_group(condition, files):
                 "failures": sum(cell["failures"].values()),
                 "failures_by_stage": dict(sorted(cell["failures"].items())),
                 "metrics_us": metrics,
+                "resources": resources,
             }
         )
     return summaries
@@ -103,6 +117,12 @@ def print_summary(result):
                 f"{cell['condition']} {cell['mode']} {cell['workers']} {cell['runs']} "
                 f"{cell['count']} {cell['failures']} {metric} {stats['p50']} "
                 f"{stats['p95']} {stats['p99']} {stats['max']}"
+            )
+        for resource, stats in cell["resources"].items():
+            print(
+                f"{cell['condition']} {cell['mode']} {cell['workers']} {cell['runs']} "
+                f"{cell['count']} {cell['failures']} {resource} {stats['p50']} "
+                f"{stats['p95']} - {stats['max']}"
             )
         if cell["failures_by_stage"]:
             print(f"{cell['condition']} {cell['mode']} {cell['workers']} failures {cell['failures_by_stage']}")

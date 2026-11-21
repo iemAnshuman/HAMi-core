@@ -15,7 +15,7 @@ Modes:
 - `cuinit`: measures `cuInit`.
 - `primary`: measures `cuInit`, `cuDeviceGet`, `cuDevicePrimaryCtxRetain`, optional `--hold-ms`, and `cuDevicePrimaryCtxRelease`.
 
-The CSV records per-worker `load_us`, `symbol_us`, `cuinit_us`, `device_us`, `retain_us`, `hold_us`, `release_us`, and `api_us`, plus a failure stage. One monotonic deadline from `--timeout-seconds` covers both barriers and result collection. On timeout, the controller kills and reaps every child and still writes rows for completed and timed-out workers.
+The CSV records per-worker `load_us`, `symbol_us`, `cuinit_us`, `device_us`, `retain_us`, `hold_us`, `release_us`, and `api_us`, plus a failure stage. It also records `cpu_us` (user plus system CPU time of all the worker's threads) and `maxrss_kb` (peak resident memory) from `getrusage`, taken just before the worker reports. One monotonic deadline from `--timeout-seconds` covers both barriers and result collection. On timeout, the controller kills and reaps every child and still writes rows for completed and timed-out workers.
 
 Build:
 
